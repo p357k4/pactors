@@ -3,50 +3,36 @@ package typed
 import (
 	"context"
 	"errors"
+	"log/slog"
 )
-
-// Receiver defines the interface for actors with a generic envelope type
-type Receiver[T any] interface {
-	Receive(ctx context.Context, msg T) error
-}
-
-type Actor[T any] interface {
-	Send(context.Context, T) error
-	Wait()
-}
 
 type envelope[T any] struct {
 	msg T
 	ctx context.Context
 }
 
-type actor[T any] struct {
-	mailbox chan envelope[T] // actor channel which must be closed on reader side
-	done    <-chan struct{}  // we only need this as read channel
+type mailbox[T any] struct {
+	channel chan envelope[T] // actor channel which must be closed on reader side
 }
 
-// Send sends an envelope to the actor's mailbox
-func (r *actor[T]) Send(ctx context.Context, msg T) (err error) {
+func (r mailbox[T]) Close() error {
+	close(r.channel)
+	return nil
+}
+
+// Send sends an envelope to the actor's channel
+func (r mailbox[T]) Send(ctx context.Context, msg T) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			var ok bool
-			if err, ok = r.(error); ok {
-				err = errors.Join(errors.New("failed to send envelope"), err)
-			}
+			slog.ErrorContext(ctx, "forever loop panicked", slog.Any("recover", r))
+			err = errors.New("failed to send envelope")
 		}
 	}()
 
 	select {
 	case <-ctx.Done():
-		return errors.New("context canceled while sending envelope")
-	case r.mailbox <- envelope[T]{
-		msg: msg,
-		ctx: ctx,
-	}:
+		return ctx.Err()
+	case r.channel <- envelope[T]{msg: msg, ctx: ctx}:
+		return nil
 	}
-	return nil
-}
-
-func (r *actor[T]) Wait() {
-	<-r.done
 }
